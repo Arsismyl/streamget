@@ -87,7 +87,7 @@ class FlexTVLiveStream(BaseLiveStream):
             html_str = await async_req(url2, proxy_addr=self.proxy_addr, headers=self.pc_headers)
             json_str = re.search('<script id="__NEXT_DATA__" type=".*">(.*?)</script>', html_str).group(1)
             json_data = json.loads(json_str)
-            channel_data = json_data['props']['pageProps']['channel']
+            channel_data = json_data['props']['pageProps']['channelStream']['channel']
             login_need = 'message' in channel_data and '로그인후 이용이 가능합니다.' in channel_data.get('message')
             if login_need:
                 if len(self.username) < 6 or len(self.password) < 8:
