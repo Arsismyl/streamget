@@ -34,14 +34,14 @@ class PopkonTVLiveStream(BaseLiveStream):
         return {
             'cookie': self.cookies or '',
             'accept': 'application/json, text/plain, */*',
-            'authorization': f'Bearer {self.access_token}',
-            'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+            'accept-language': 'zh-CN,zh;q=0.9',
             'clientKey': client_key_list["PW"],
-            'connection': 'keep-alive',
             'content-type': 'application/json',
+            'isNew': 'true',
             'origin': 'https://www.popkontv.com',
-            'referer': 'https://www.popkontv.com/live/view?castId=owl2205&partnerCode=P-00117',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0',
+            'referer': 'https://www.popkontv.com/search?keyword=143s2',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
+                          'Chrome/145.0.0.0 Safari/537.36 Edg/145.0.0.0',
         }
 
     async def _get_room_info(self, url: str) -> tuple:
@@ -55,11 +55,9 @@ class PopkonTVLiveStream(BaseLiveStream):
             'searchKeyword': anchor_id,
             'signId': self.username,
         }
-
-        api = 'https://www.popkontv.com/api/proxy/broadcast/v1/search/all'
+        api = 'https://www.popkontv.com/api/proxy/broadcast/v1.1/search/all'
         json_str = await async_req(api, proxy_addr=self.proxy_addr, headers=self.pc_headers, json_data=data)
         json_data = json.loads(json_str)
-
         partner_code = ''
         anchor_name = 'Unknown'
         for item in json_data['data']['broadCastList']:
@@ -151,7 +149,6 @@ class PopkonTVLiveStream(BaseLiveStream):
         new_token = None
         if room_info:
             cast_start_date_code, cast_partner_code, mc_sign_id, cast_type, is_private = room_info
-            result["is_live"] = True
             room_password = self.get_params(url, "pwd")
             if int(is_private) != 0 and not room_password:
                 raise RuntimeError(f"Failed to retrieve live room data because {anchor_name}'s room is a private room. "
@@ -177,7 +174,6 @@ class PopkonTVLiveStream(BaseLiveStream):
                     play_api, proxy_addr=self.proxy_addr, json_data=_json_data, headers=self.pc_headers)
 
             json_str = await fetch_data(self.partner_code)
-
             if 'HTTP Error 400' in json_str or 'statusCd":"E5000' in json_str:
 
                 if len(self.username) < 4 or len(self.password) < 10:
@@ -194,6 +190,10 @@ class PopkonTVLiveStream(BaseLiveStream):
                     raise RuntimeError("popkontv login failed, please check if the account and password are correct")
             json_data = json.loads(json_str)
             status_msg = json_data["statusMsg"]
+            if status_msg != 'SUCEESS':
+                if status_msg == '19세 미만은 시청이 불가능합니다.':
+                    raise RuntimeError("PopkonTV stream fetch failed. Viewers under 19 are not allowed. Please login.")
+                raise RuntimeError(status_msg)
             if json_data['statusCd'] == "L000A":
                 # print("Failed to retrieve live stream source,", status_msg)
                 raise RuntimeError("You are an unverified member. After logging into the popkontv official website, "
@@ -204,10 +204,10 @@ class PopkonTVLiveStream(BaseLiveStream):
                 json_str = await fetch_data(self.partner_code)
                 json_data = json.loads(json_str)
                 m3u8_url = json_data['data']['castHlsUrl']
-                result |= {"m3u8_url": m3u8_url, "record_url": m3u8_url}
+                result |= {"is_live": m3u8_url is not None, "m3u8_url": m3u8_url, "record_url": m3u8_url}
             elif json_data['statusCd'] == "L0000":
                 m3u8_url = json_data['data']['castHlsUrl']
-                result |= {"m3u8_url": m3u8_url, "record_url": m3u8_url}
+                result |= {"is_live": m3u8_url is not None, "m3u8_url": m3u8_url, "record_url": m3u8_url}
             else:
                 raise RuntimeError("Failed to retrieve live stream source,", status_msg)
             if not process_data:
