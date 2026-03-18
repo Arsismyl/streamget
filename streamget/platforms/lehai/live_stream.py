@@ -1,4 +1,4 @@
-from ...data import StreamData
+from ...data import StreamData, wrap_stream
 from ..base import BaseLiveStream
 from ..haixiu.live_stream import HaixiuLiveStream
 
@@ -31,4 +31,4 @@ class LehaiLiveStream(BaseLiveStream):
         Fetches the stream URL for a live room and wraps it into a StreamData object.
         """
         json_data |= {"platform": "乐嗨直播"}
-        return await self.stream.fetch_stream_url(json_data)
+        return wrap_stream(json_data)
