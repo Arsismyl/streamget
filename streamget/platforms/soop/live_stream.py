@@ -3,6 +3,7 @@ import re
 import urllib.parse
 import uuid
 import time
+from urllib.parse import urljoin
 from ...data import StreamData, wrap_stream
 from ...requests.async_http import async_req
 from ..base import BaseLiveStream
