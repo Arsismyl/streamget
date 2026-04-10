@@ -38,6 +38,15 @@ class SoopLiveStream(BaseLiveStream):
             'cookie': self.cookies or '',
         }
 
+    def _loads_json_or_raise(self, text: str, context: str) -> dict:
+        if not text or not text.strip():
+            raise RuntimeError(f"{context} returned empty response")
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            preview = text[:300].replace("\n", "\\n")
+            raise RuntimeError(f"{context} returned non-JSON: {preview}") from e
+            
     async def login_sooplive(self) -> str | None:
         if self.username and self.password and len(self.username) < 6 or len(self.password) < 10:
             raise RuntimeError("sooplive login failed! Please enter the correct account and password for the sooplive "
@@ -78,17 +87,20 @@ class SoopLiveStream(BaseLiveStream):
         }
 
         url2 = 'https://livestream-manager.sooplive.com/broad_stream_assign.html?' + urllib.parse.urlencode(params)
-        json_str = await async_req(url=url2, proxy_addr=self.proxy_addr, headers=self.pc_headers)
-        json_data = json.loads(json_str)
-
-        return json_data
+        raw = await async_req(url=url2, proxy_addr=self.proxy_addr, headers=self.pc_headers)
+        return self._loads_json_or_raise(raw, f"soop broad_stream_assign broad_no={broad_no}")
 
     async def get_sooplive_tk(self, url: str, rtype: str) -> str | tuple:
         split_url = url.split('/')
         bj_id = split_url[3] if len(split_url) < 6 else split_url[5]
-        room_password = self.get_params(url, "pwd")
-        if not room_password:
-            room_password = ''
+        room_password = self.get_params(url, "pwd") or ''
+
+        # 关键：按当前房间动态设置 referer
+        self.pc_headers['referer'] = url
+        self.pc_headers['origin'] = 'https://play.sooplive.com'
+    
+ #       if not room_password:
+ #           room_password = ''
         data = {
             'bid': bj_id,
             'bno': '',
@@ -103,12 +115,11 @@ class SoopLiveStream(BaseLiveStream):
         }
 
         url2 = f'https://live.sooplive.com/afreeca/player_live_api.php?bjid={bj_id}'
-        json_str = await async_req(url=url2, proxy_addr=self.proxy_addr, headers=self.pc_headers, data=data)
-        json_data = json.loads(json_str)
+        raw = await async_req(url=url2, proxy_addr=self.proxy_addr, headers=self.pc_headers, data=data)
+        json_data = self._loads_json_or_raise(raw, f"soop player_live_api rtype={rtype} bj_id={bj_id}")
 
         if rtype == 'aid':
-            token = json_data["CHANNEL"]["AID"]
-            return token
+            return json_data["CHANNEL"]["AID"]
         else:
             bj_name = json_data['CHANNEL']['BJNICK']
             bj_id = json_data['CHANNEL']['BJID']
@@ -195,8 +206,8 @@ class SoopLiveStream(BaseLiveStream):
 
         url2 = 'http://api.m.sooplive.co.kr/broad/a/watch'
 
-        json_str = await async_req(url2, proxy_addr=self.proxy_addr, headers=self.pc_headers, data=data)
-        json_data = json.loads(json_str)
+        raw = await async_req(url2, proxy_addr=self.proxy_addr, headers=self.pc_headers, data=data)
+        json_data = self._loads_json_or_raise(raw, "soop broad/a/watch")
 
         if 'user_nick' in json_data['data']:
             anchor_name = json_data['data']['user_nick']
@@ -285,24 +296,47 @@ class SoopLiveStream(BaseLiveStream):
                 raise Exception("error message：Please check if the input sooplive live room address is correct.")
 
         if json_data['result'] == 1 and anchor_name:
-            aid_token = await self.get_sooplive_tk(url, rtype='aid')
-            _anchor_name, broad_no = await self.get_sooplive_tk(url, rtype='info')
-            
-            view_url_data = await self._get_sooplive_cdn_url(broad_no)
-            view_url = view_url_data['view_url']
-            m3u8_url = view_url + '?aid=' + aid_token
+            try:
+                aid_token = await self.get_sooplive_tk(url, rtype='aid')
+                _anchor_name, broad_no = await self.get_sooplive_tk(url, rtype='info')
 
+                view_url_data = await self._get_sooplive_cdn_url(broad_no)
+                view_url = view_url_data['view_url']
+                m3u8_url = view_url + '?aid=' + aid_token
 
-            play_url_list = await get_url_list(m3u8_url)
-            print("SOOP m3u8_url =", m3u8_url)
-            print("SOOP play_url_list =", play_url_list)
+                play_url_list = await get_url_list(m3u8_url)
+                print("SOOP new path m3u8_url =", m3u8_url)
+                print("SOOP new path play_url_list =", play_url_list)
 
             result |= {
                 'anchor_name': _anchor_name or anchor_name,
                 'is_live': True,
                 'title': json_data['data'].get('broad_title', ''),
                 'm3u8_url': m3u8_url,
-                'play_url_list': await get_url_list(m3u8_url)
+                'play_url_list': play_url_list
+            }
+
+        except Exception as e:
+            print(f"SOOP new path failed, fallback old path: {e}")
+
+            broad_no = json_data['data']['broad_no']
+            broad_title = json_data['data']['broad_title']
+            hls_authentication_key = json_data['data']['hls_authentication_key']
+
+            view_url_data = await self._get_sooplive_cdn_url(broad_no)
+            view_url = view_url_data['view_url']
+            m3u8_url = view_url + '?aid=' + hls_authentication_key
+            play_url_list = await get_url_list(m3u8_url)
+
+            print("SOOP fallback m3u8_url =", m3u8_url)
+            print("SOOP fallback play_url_list =", play_url_list)
+
+            result |= {
+                'anchor_name': anchor_name,
+                'is_live': True,
+                'title': broad_title,
+                'm3u8_url': m3u8_url,
+                'play_url_list': play_url_list
             }
             
         result['new_cookies'] = None
@@ -314,3 +348,4 @@ class SoopLiveStream(BaseLiveStream):
         """
         data = await self.get_stream_url(json_data, video_quality, platform='SOOP', spec=True)
         return wrap_stream(data)
+        
