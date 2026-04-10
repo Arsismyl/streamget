@@ -235,8 +235,8 @@ class SoopLiveStream(BaseLiveStream):
             if not items:
                 for line in resp.splitlines():
                     line = line.strip()
-                        if line and not line.startswith("#"):
-                            items.append((0, urljoin(m3u8, line)))
+                    if line and not line.startswith("#"):
+                        items.append((0, urljoin(m3u8, line)))
 
             items.sort(key=lambda x: x[0], reverse=True)
             return [u for _, u in items]
