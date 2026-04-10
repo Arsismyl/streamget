@@ -285,18 +285,26 @@ class SoopLiveStream(BaseLiveStream):
                 raise Exception("error message：Please check if the input sooplive live room address is correct.")
 
         if json_data['result'] == 1 and anchor_name:
-            broad_no = json_data['data']['broad_no']
-            broad_title = json_data['data']['broad_title']
-            hls_authentication_key = json_data['data']['hls_authentication_key']
+            aid_token = await self.get_sooplive_tk(url, rtype='aid')
+            _anchor_name, broad_no = await self.get_sooplive_tk(url, rtype='info')
+            
             view_url_data = await self._get_sooplive_cdn_url(broad_no)
             view_url = view_url_data['view_url']
-            m3u8_url = view_url + '?aid=' + hls_authentication_key
+            m3u8_url = view_url + '?aid=' + aid_token
+
+
+            play_url_list = await get_url_list(m3u8_url)
+            print("SOOP m3u8_url =", m3u8_url)
+            print("SOOP play_url_list =", play_url_list)
+
             result |= {
+                'anchor_name': _anchor_name or anchor_name,
                 'is_live': True,
-                'title': broad_title,
+                'title': json_data['data'].get('broad_title', ''),
                 'm3u8_url': m3u8_url,
                 'play_url_list': await get_url_list(m3u8_url)
             }
+            
         result['new_cookies'] = None
         return result
 
