@@ -76,7 +76,7 @@ class SoopLiveStream(BaseLiveStream):
                 f"sooplive login failed, please check if the account password in the configuration file is correct. {e}"
             )
 
-    async def _get_sooplive_cdn_url(self, broad_no: str) -> dict:
+    async def _get_sooplive_cdn_url(self, broad_no: str, retries: int = 4) -> dict:
         params = {
             'return_type': 'gcp_cdn',
             'use_cors': 'true',
@@ -87,20 +87,42 @@ class SoopLiveStream(BaseLiveStream):
         }
 
         url2 = 'https://livestream-manager.sooplive.com/broad_stream_assign.html?' + urllib.parse.urlencode(params)
-        raw = await async_req(url=url2, proxy_addr=self.proxy_addr, headers=self.pc_headers)
-        return self._loads_json_or_raise(raw, f"soop broad_stream_assign broad_no={broad_no}")
+
+        last_error = None
+        for attempt in range(retries):
+            try:
+                raw = await async_req(url=url2, proxy_addr=self.proxy_addr, headers=self.pc_headers)
+
+                if not raw or not raw.strip():
+                    raise RuntimeError("empty response")
+
+                text = raw.strip()
+                if text.startswith("{"):
+                    return json.loads(text)
+
+                raise RuntimeError(f"non-JSON response: {text[:200]}")
+
+            except Exception as e:
+                last_error = e
+                print(f"SOOP broad_stream_assign retry {attempt + 1}/{retries} failed: {e}")
+                if attempt < retries - 1:
+                    await asyncio.sleep(0.8 * (attempt + 1))
+
+        raise RuntimeError(
+            f"soop broad_stream_assign broad_no={broad_no} failed after {retries} retries: {last_error}"
+        )
 
     async def get_sooplive_tk(self, url: str, rtype: str) -> str | tuple:
         split_url = url.split('/')
         bj_id = split_url[3] if len(split_url) < 6 else split_url[5]
-        room_password = self.get_params(url, "pwd") or ''
+        
 
         # 关键：按当前房间动态设置 referer
         self.pc_headers['referer'] = url
         self.pc_headers['origin'] = 'https://play.sooplive.com'
-    
- #       if not room_password:
- #           room_password = ''
+
+        room_password = self.get_params(url, "pwd") or ''
+
         data = {
             'bid': bj_id,
             'bno': '',
