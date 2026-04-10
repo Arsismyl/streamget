@@ -2,7 +2,7 @@ import json
 import re
 import urllib.parse
 import uuid
-
+import time
 from ...data import StreamData, wrap_stream
 from ...requests.async_http import async_req
 from ..base import BaseLiveStream
@@ -22,10 +22,10 @@ class SoopLiveStream(BaseLiveStream):
 
     def _get_pc_headers(self) -> dict:
         return {
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
             'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'origin': 'https://play.sooplive.co.kr',
-            'referer': 'https://play.sooplive.co.kr/superbsw123/277837074',
+            'origin': 'https://play.sooplive.com',
+            'referer': 'https://play.sooplive.com/',
             'cookie': self.cookies or '',
         }
 
@@ -69,13 +69,14 @@ class SoopLiveStream(BaseLiveStream):
     async def _get_sooplive_cdn_url(self, broad_no: str) -> dict:
         params = {
             'return_type': 'gcp_cdn',
-            'use_cors': 'false',
-            'cors_origin_url': 'play.sooplive.co.kr',
+            'use_cors': 'true',
+            'cors_origin_url': 'play.sooplive.com',
             'broad_key': f'{broad_no}-common-master-hls',
-            'time': '8361.086329376785',
+            'player_mode': 'landing',
+            'time': str(time.time()),
         }
 
-        url2 = 'http://livestream-manager.sooplive.co.kr/broad_stream_assign.html?' + urllib.parse.urlencode(params)
+        url2 = 'https://livestream-manager.sooplive.com/broad_stream_assign.html?' + urllib.parse.urlencode(params)
         json_str = await async_req(url=url2, proxy_addr=self.proxy_addr, headers=self.pc_headers)
         json_data = json.loads(json_str)
 
@@ -100,7 +101,7 @@ class SoopLiveStream(BaseLiveStream):
             'is_revive': 'false',
         }
 
-        url2 = f'https://live.sooplive.co.kr/afreeca/player_live_api.php?bjid={bj_id}'
+        url2 = f'https://live.sooplive.com/afreeca/player_live_api.php?bjid={bj_id}'
         json_str = await async_req(url=url2, proxy_addr=self.proxy_addr, headers=self.pc_headers, data=data)
         json_data = json.loads(json_str)
 
@@ -176,7 +177,7 @@ class SoopLiveStream(BaseLiveStream):
             dict: A dictionary containing anchor name, live status, room URL, and title.
         """
 
-        if "sooplive.com" in url:
+        if "sooplive.com" in url and "play.sooplive.com" not in url:
             return await self._fetch_web_stream_data_global(url, process_data)
 
         split_url = url.split('/')
@@ -207,16 +208,38 @@ class SoopLiveStream(BaseLiveStream):
 
         async def get_url_list(m3u8: str) -> list[str]:
             resp = await async_req(url=m3u8, proxy_addr=self.proxy_addr, headers=self.pc_headers)
-            play_url_list = []
-            url_prefix = m3u8.rsplit('/', maxsplit=1)[0] + '/'
-            for i in resp.split('\n'):
-                if i.startswith('auth_playlist'):
-                    play_url_list.append(url_prefix + i.strip())
-            bandwidth_pattern = re.compile(r'BANDWIDTH=(\d+)')
-            bandwidth_list = bandwidth_pattern.findall(resp)
-            url_to_bandwidth = {purl: int(bandwidth) for bandwidth, purl in zip(bandwidth_list, play_url_list)}
-            play_url_list = sorted(play_url_list, key=lambda purl: url_to_bandwidth[purl], reverse=True)
-            return play_url_list
+            items = []
+            current_inf = None
+            for line in resp.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+
+                if line.startswith("#EXT-X-STREAM-INF:"):
+                    current_inf = line
+                    continue
+
+                if line.startswith("#"):
+                    continue
+
+                full_url = urljoin(m3u8, line)
+                bandwidth = 0
+                if current_inf:
+                    m_bw = re.search(r'BANDWIDTH=(\d+)', current_inf)
+                    if m_bw:
+                        bandwidth = int(m_bw.group(1))
+                items.append((bandwidth, full_url))
+                current_inf = None
+
+            # 没解析到 variant，就退回到把所有非注释行都当地址
+            if not items:
+                for line in resp.splitlines():
+                    line = line.strip()
+                        if line and not line.startswith("#"):
+                            items.append((0, urljoin(m3u8, line)))
+
+            items.sort(key=lambda x: x[0], reverse=True)
+            return [u for _, u in items]
 
         if not anchor_name:
             async def handle_login() -> str | None:
