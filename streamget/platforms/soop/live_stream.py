@@ -308,36 +308,35 @@ class SoopLiveStream(BaseLiveStream):
                 print("SOOP new path m3u8_url =", m3u8_url)
                 print("SOOP new path play_url_list =", play_url_list)
 
-            result |= {
-                'anchor_name': _anchor_name or anchor_name,
-                'is_live': True,
-                'title': json_data['data'].get('broad_title', ''),
-                'm3u8_url': m3u8_url,
-                'play_url_list': play_url_list
-            }
+                result |= {
+                    'anchor_name': _anchor_name or anchor_name,
+                    'is_live': True,
+                    'title': json_data['data'].get('broad_title', ''),
+                    'm3u8_url': m3u8_url,
+                    'play_url_list': play_url_list
+                 }
+            except Exception as e:
+                print(f"SOOP new path failed, fallback old path: {e}")
 
-        except Exception as e:
-            print(f"SOOP new path failed, fallback old path: {e}")
+                broad_no = json_data['data']['broad_no']
+                broad_title = json_data['data']['broad_title']
+                hls_authentication_key = json_data['data']['hls_authentication_key']
 
-            broad_no = json_data['data']['broad_no']
-            broad_title = json_data['data']['broad_title']
-            hls_authentication_key = json_data['data']['hls_authentication_key']
+                view_url_data = await self._get_sooplive_cdn_url(broad_no)
+                view_url = view_url_data['view_url']
+                m3u8_url = view_url + '?aid=' + hls_authentication_key
+                play_url_list = await get_url_list(m3u8_url)
 
-            view_url_data = await self._get_sooplive_cdn_url(broad_no)
-            view_url = view_url_data['view_url']
-            m3u8_url = view_url + '?aid=' + hls_authentication_key
-            play_url_list = await get_url_list(m3u8_url)
+                print("SOOP fallback m3u8_url =", m3u8_url)
+                print("SOOP fallback play_url_list =", play_url_list)
 
-            print("SOOP fallback m3u8_url =", m3u8_url)
-            print("SOOP fallback play_url_list =", play_url_list)
-
-            result |= {
-                'anchor_name': anchor_name,
-                'is_live': True,
-                'title': broad_title,
-                'm3u8_url': m3u8_url,
-                'play_url_list': play_url_list
-            }
+                result |= {
+                    'anchor_name': anchor_name,
+                    'is_live': True,
+                    'title': broad_title,
+                    'm3u8_url': m3u8_url,
+                    'play_url_list': play_url_list
+                }
             
         result['new_cookies'] = None
         return result
