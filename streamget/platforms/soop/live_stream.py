@@ -3,7 +3,9 @@ import re
 import urllib.parse
 import uuid
 import time
+import asyncio
 from urllib.parse import urljoin
+
 from ...data import StreamData, wrap_stream
 from ...requests.async_http import async_req
 from ..base import BaseLiveStream
@@ -338,7 +340,7 @@ class SoopLiveStream(BaseLiveStream):
                     'play_url_list': play_url_list
                  }
             except Exception as e:
-                print(f"SOOP new path failed, fallback old path: {e}")
+                print(f"SOOP fetch stream failed: {e}")
 
                 broad_no = json_data['data']['broad_no']
                 broad_title = json_data['data']['broad_title']
