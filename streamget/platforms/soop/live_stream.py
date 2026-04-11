@@ -50,9 +50,15 @@ class SoopLiveStream(BaseLiveStream):
             raise RuntimeError(f"{context} returned non-JSON: {preview}") from e
             
     async def login_sooplive(self) -> str | None:
-        if self.username and self.password and len(self.username) < 6 or len(self.password) < 10:
-            raise RuntimeError("sooplive login failed! Please enter the correct account and password for the sooplive "
-                               "platform in the config.ini file.")
+        if not self.username or not self.password:
+            raise RuntimeError(
+                "sooplive login failed! Please enter the SOOP account and password in the config.ini file."
+            )
+
+        if len(self.username) < 6 or len(self.password) < 10:
+            raise RuntimeError(
+                "sooplive login failed! Please enter the correct account and password for the sooplive platform in the config.ini file."
+            )
 
         data = {
             'szWork': 'login',
