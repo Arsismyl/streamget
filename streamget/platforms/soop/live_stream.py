@@ -78,7 +78,7 @@ class SoopLiveStream(BaseLiveStream):
                 f"sooplive login failed, please check if the account password in the configuration file is correct. {e}"
             )
 
-    async def _get_sooplive_cdn_url(self, broad_no: str, retries: int = 4) -> dict:
+    async def _get_sooplive_cdn_url(self, broad_no: str, retries: int = 10) -> dict:
         params = {
             'return_type': 'gcp_cdn',
             'use_cors': 'true',
@@ -108,7 +108,7 @@ class SoopLiveStream(BaseLiveStream):
                 last_error = e
                 print(f"SOOP broad_stream_assign retry {attempt + 1}/{retries} failed: {e}")
                 if attempt < retries - 1:
-                    await asyncio.sleep(0.8 * (attempt + 1))
+                    await asyncio.sleep(min(0.8 * (attempt + 1), 2.0))
 
         raise RuntimeError(
             f"soop broad_stream_assign broad_no={broad_no} failed after {retries} retries: {last_error}"
