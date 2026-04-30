@@ -145,31 +145,48 @@ class TwitCastingLiveStream(BaseLiveStream):
         async def check_m3u8_available(play_url: str) -> bool:
             """
             验证 m3u8 是否真的可播放。
-            404、403、HTML 错误页、空响应都视为不可录制。
+            TwitCasting 的 HLS 有时会瞬时 404 / 空响应 / ConnectionTerminated，
+            所以这里不能只测一次。
             """
-            try:
-                headers = dict(self.mobile_headers)
-                headers.update({
-                    "accept": "*/*",
-                    "referer": f"https://twitcasting.tv/{anchor_id}",
-                    "origin": "https://twitcasting.tv",
-                })
-    
-                txt = await async_req(
-                    play_url,
-                    proxy_addr=self.proxy_addr,
-                    headers=headers,
-                    timeout=15,
-                )
-    
-                if isinstance(txt, bytes):
-                    txt = txt.decode("utf-8", "ignore")
-    
-                head = txt[:300].lstrip()
-                return head.startswith("#EXTM3U")
-    
-            except Exception:
-                return False
+            headers = dict(self.mobile_headers)
+            headers.update({
+                "accept": "*/*",
+                "referer": f"https://twitcasting.tv/{anchor_id}",
+                "origin": "https://twitcasting.tv",
+                "user-agent": self.mobile_headers.get("user-agent") or (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 Chrome/147.0.0.0 Safari/537.36"
+                ),
+            })
+
+            last_error = None
+
+            for attempt in range(1, 5):
+                try:
+                    txt = await async_req(
+                        play_url,
+                        proxy_addr=self.proxy_addr,
+                        headers=headers,
+                        timeout=20,
+                    )
+
+                    if isinstance(txt, bytes):
+                        txt = txt.decode("utf-8", "ignore")
+
+                    head = str(txt or "")[:500].lstrip()
+
+                    if head.startswith("#EXTM3U"):
+                        return True
+
+                    last_error = f"non-m3u8 response: {head[:120]!r}"
+
+                except Exception as e:
+                    last_error = e
+
+                await asyncio.sleep(min(2 * attempt, 8))
+
+            result["error"] = f"TwitCasting m3u8 unavailable after retries: {last_error}"
+            return False
     
         async def get_page_html() -> str:
             return await async_req(
@@ -227,20 +244,42 @@ class TwitCastingLiveStream(BaseLiveStream):
     
         last_error = None
         json_data = None
-    
-        for i in range(5):
+
+        for i in range(10):
             try:
                 twitcasting_str = await async_req(
                     url_streamserver,
                     proxy_addr=self.proxy_addr,
                     headers=self.mobile_headers,
-                    timeout=20,
+                    timeout=25,
                 )
-                json_data = json.loads(twitcasting_str)
-                break
+
+                if isinstance(twitcasting_str, bytes):
+                    twitcasting_str = twitcasting_str.decode("utf-8", "ignore")
+
+                head = str(twitcasting_str or "").lstrip()
+
+                if not head.startswith("{"):
+                    raise RuntimeError(f"non-JSON response: {head[:160]!r}")
+
+                tmp_json = json.loads(head)
+
+                streams_tmp = (
+                    tmp_json.get("tc-hls", {}).get("streams")
+                    if isinstance(tmp_json, dict)
+                    else None
+                )
+
+                if streams_tmp:
+                    json_data = tmp_json
+                    break
+
+                last_error = "streamserver returned JSON but no tc-hls streams"
+
             except Exception as e:
                 last_error = e
-                await asyncio.sleep(2 + i * 2)
+
+            await asyncio.sleep(min(2 + i * 2, 15))
     
         if json_data is None:
             result["is_live"] = False
