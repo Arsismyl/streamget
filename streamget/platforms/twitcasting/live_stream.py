@@ -91,7 +91,7 @@ class TwitCastingLiveStream(BaseLiveStream):
                     raise RuntimeError("TwitCasting login failed, please check if the account password in the "
                                        "configuration file is correct")
                 # print("TwitCasting login successful! Starting to fetch data...")
-                self.mobile_headers['Cookie'] = new_cookie
+                self.mobile_headers['cookie'] = new_cookie
             anchor_name, live_status, live_title = await get_data()
         except AttributeError:
             # print("Failed to retrieve TwitCasting data, attempting to log in...")
@@ -100,7 +100,7 @@ class TwitCastingLiveStream(BaseLiveStream):
                 raise RuntimeError("TwitCasting login failed, please check if the account and password in the "
                                    "configuration file are correct")
             # print("TwitCasting login successful! Starting to fetch data...")
-            self.mobile_headers['Cookie'] = new_cookie
+            self.mobile_headers['cookie'] = new_cookie
             anchor_name, live_status, live_title = await get_data()
 
         result["anchor_name"] = anchor_name
