@@ -69,38 +69,34 @@ class TwitCastingLiveStream(BaseLiveStream):
     async def fetch_web_stream_data(self, url: str, process_data: bool = True) -> dict:
         """
         Fetches web stream data for a live room.
+        修正版：
+        1. 不再只靠 movie_id 判断开播，避免未开播时误判为直播中。
+        2. 拿到 TwitCasting m3u8 后先验证是否可访问。
+        3. 如果 HLS 是 404 / 不可播放，返回 is_live=False，避免 StreamCap 进入录制中后报错。
         """
         parsed = urlparse(url)
         path_parts = parsed.path.strip("/").split("/")
         anchor_id = path_parts[0] if path_parts and path_parts[0] else url.rstrip("/").split("/")[-1]
-
+    
         result = {
-            "anchor_name": "",
+            "anchor_name": anchor_id,
             "is_live": False,
             "live_url": url,
         }
-
+    
         new_cookie = None
-
+    
         def pick(patterns, text, group=1, flags=re.I | re.S, default=""):
             for pattern in patterns:
                 m = re.search(pattern, text, flags)
                 if m:
                     return html.unescape(m.group(group).strip())
             return default
-
-        async def get_data() -> tuple[str, str, str]:
-            html_str = await async_req(
-                url,
-                proxy_addr=self.proxy_addr,
-                headers=self.mobile_headers,
-                timeout=20,
-            )
-
-            # 主播名 / 页面标题，兼容不同语言和不同 HTML 结构
+    
+        def parse_page(html_str: str):
             title_tag_match = re.search(r"<title>(.*?)</title>", html_str, re.I | re.S)
             title_tag = html.unescape(title_tag_match.group(1).strip()) if title_tag_match else ""
-
+    
             anchor_match = re.search(r"<title>(.*?)\s*\(@([^)]+)\)", html_str, re.I | re.S)
             if anchor_match:
                 anchor_display = html.unescape(anchor_match.group(1).strip())
@@ -108,7 +104,7 @@ class TwitCastingLiveStream(BaseLiveStream):
             else:
                 anchor_display = anchor_id
                 anchor_screen = anchor_id
-
+    
             live_title = pick(
                 [
                     r'<meta\s+name=["\']twitter:title["\']\s+content=["\']([^"\']*)["\']',
@@ -118,7 +114,7 @@ class TwitCastingLiveStream(BaseLiveStream):
                 html_str,
                 default=title_tag or anchor_id,
             )
-
+    
             movie_id = pick(
                 [
                     r'data-movie-id=["\']([^"\']+)["\']',
@@ -128,100 +124,177 @@ class TwitCastingLiveStream(BaseLiveStream):
                 html_str,
                 default="",
             )
-
+    
+            # 重点：这里只接受明确的直播标记，不再用 movie_id 单独判断直播中
             is_live = False
-            if re.search(r'data-is-onlive=["\']true["\']', html_str, re.I):
-                is_live = True
-            elif re.search(r'"is_live"\s*:\s*true', html_str, re.I):
-                is_live = True
-            elif re.search(r'"isOnLive"\s*:\s*true', html_str, re.I):
-                is_live = True
-            elif movie_id:
-                # TwitCasting 页面能拿到当前 movie_id 时，大概率就是直播中
-                is_live = True
-
+            live_patterns = [
+                r'data-is-onlive=["\']true["\']',
+                r'"is_live"\s*:\s*true',
+                r'"isOnLive"\s*:\s*true',
+                r'"isLive"\s*:\s*true',
+            ]
+    
+            for p in live_patterns:
+                if re.search(p, html_str, re.I | re.S):
+                    is_live = True
+                    break
+                
             anchor_name = f"{anchor_display}-{anchor_screen}-{movie_id or 'unknown'}"
-            return anchor_name, "true" if is_live else "false", live_title
-
-        # 只有明确带 ?login=true 时才走账号密码登录
-        # 你现在是 Cookie 模式，正常不要在 URL 后面加 login=true
+            return anchor_name, is_live, live_title, movie_id
+    
+        async def check_m3u8_available(play_url: str) -> bool:
+            """
+            验证 m3u8 是否真的可播放。
+            404、403、HTML 错误页、空响应都视为不可录制。
+            """
+            try:
+                headers = dict(self.mobile_headers)
+                headers.update({
+                    "accept": "*/*",
+                    "referer": f"https://twitcasting.tv/{anchor_id}",
+                    "origin": "https://twitcasting.tv",
+                })
+    
+                txt = await async_req(
+                    play_url,
+                    proxy_addr=self.proxy_addr,
+                    headers=headers,
+                    timeout=15,
+                )
+    
+                if isinstance(txt, bytes):
+                    txt = txt.decode("utf-8", "ignore")
+    
+                head = txt[:300].lstrip()
+                return head.startswith("#EXTM3U")
+    
+            except Exception:
+                return False
+    
+        async def get_page_html() -> str:
+            return await async_req(
+                url,
+                proxy_addr=self.proxy_addr,
+                headers=self.mobile_headers,
+                timeout=20,
+            )
+    
+        # 只有 URL 明确带 ?login=true 时才走账号密码登录。
+        # 你现在主要是 Cookie 模式，正常不要加 login=true。
         to_login = self.get_params(url, "login")
         if to_login == "true":
             if not self.username or not self.password:
-                raise RuntimeError("TwitCasting login=true requires username and password. If using cookie, remove login=true.")
+                raise RuntimeError(
+                    "TwitCasting login=true requires username and password. "
+                    "If using cookie, remove login=true."
+                )
+    
             new_cookie = await self.login_twitcasting()
             if not new_cookie:
                 raise RuntimeError("TwitCasting login failed, please check username/password.")
+    
             self.mobile_headers["cookie"] = new_cookie
-
+    
         try:
-            anchor_name, live_status, live_title = await get_data()
+            html_str = await get_page_html()
+            anchor_name, is_live, live_title, movie_id = parse_page(html_str)
         except Exception as e:
-            # 不要在 Cookie 模式解析失败后强行账号密码登录
-            # 否则就会出现 cs_session_id / NoneType 之类的二次报错
+            # Cookie 模式下不要解析失败后强行账号密码登录，否则容易出现 cs_session_id NoneType 二次报错
             if self.username and self.password and not self.cookies:
                 new_cookie = await self.login_twitcasting()
                 if not new_cookie:
                     raise RuntimeError("TwitCasting login failed, please check username/password.")
+    
                 self.mobile_headers["cookie"] = new_cookie
-                anchor_name, live_status, live_title = await get_data()
+                html_str = await get_page_html()
+                anchor_name, is_live, live_title, movie_id = parse_page(html_str)
             else:
                 result["error"] = f"TwitCasting page parse failed: {e}"
                 return result
-
+    
         result["anchor_name"] = anchor_name
-
-        if live_status == "true":
-            url_streamserver = (
-                f"https://twitcasting.tv/streamserver.php?"
-                f"target={anchor_id}&mode=client&player=pc_web"
-            )
-
-            last_error = None
-            json_data = None
-
-            for i in range(3):
-                try:
-                    twitcasting_str = await async_req(
-                        url_streamserver,
-                        proxy_addr=self.proxy_addr,
-                        headers=self.mobile_headers,
-                        timeout=20,
-                    )
-                    json_data = json.loads(twitcasting_str)
-                    break
-                except Exception as e:
-                    last_error = e
-                    await asyncio.sleep(2 + i * 2)
-
-            if json_data is None:
-                raise RuntimeError(f"TwitCasting streamserver request failed after retries: {last_error}")
-
-            if not json_data.get("tc-hls") or not json_data["tc-hls"].get("streams"):
-                raise RuntimeError("No m3u8_url, please check TwitCasting url or cookie")
-
-            stream_dict = json_data["tc-hls"]["streams"]
-
-            quality_order = {
-                "high": 0,
-                "medium": 1,
-                "low": 2,
-            }
-
-            sorted_streams = sorted(
-                stream_dict.items(),
-                key=lambda item: quality_order.get(item[0], 99),
-            )
-
-            play_url_list = [stream_url for quality, stream_url in sorted_streams]
-
-            result |= {
-                "title": live_title,
-                "is_live": True,
-                "play_url_list": play_url_list,
-            }
-
         result["new_cookies"] = new_cookie
+    
+        # 页面没有明确直播标记，直接返回未开播
+        if not is_live:
+            result["is_live"] = False
+            return result
+    
+        url_streamserver = (
+            f"https://twitcasting.tv/streamserver.php?"
+            f"target={anchor_id}&mode=client&player=pc_web"
+        )
+    
+        last_error = None
+        json_data = None
+    
+        for i in range(5):
+            try:
+                twitcasting_str = await async_req(
+                    url_streamserver,
+                    proxy_addr=self.proxy_addr,
+                    headers=self.mobile_headers,
+                    timeout=20,
+                )
+                json_data = json.loads(twitcasting_str)
+                break
+            except Exception as e:
+                last_error = e
+                await asyncio.sleep(2 + i * 2)
+    
+        if json_data is None:
+            result["is_live"] = False
+            result["error"] = f"TwitCasting streamserver request failed after retries: {last_error}"
+            return result
+    
+        streams = (
+            json_data.get("tc-hls", {}).get("streams")
+            if isinstance(json_data, dict)
+            else None
+        )
+    
+        if not streams:
+            result["is_live"] = False
+            result["error"] = "TwitCasting has no tc-hls streams. Maybe offline, private, or cookie has no permission."
+            return result
+    
+        quality_order = {
+            "high": 0,
+            "source": 0,
+            "medium": 1,
+            "low": 2,
+        }
+    
+        sorted_streams = sorted(
+            [
+                (quality, stream_url)
+                for quality, stream_url in streams.items()
+                if isinstance(stream_url, str) and stream_url.startswith("http")
+            ],
+            key=lambda item: quality_order.get(item[0], 99),
+        )
+    
+        valid_play_url_list = []
+    
+        for quality, stream_url in sorted_streams:
+            if await check_m3u8_available(stream_url):
+                valid_play_url_list.append(stream_url)
+    
+        # 关键：所有 m3u8 都是 404 / 不可访问时，不要告诉 StreamCap 正在直播
+        if not valid_play_url_list:
+            result["is_live"] = False
+            result["error"] = (
+                "TwitCasting page says live, but all m3u8 urls are unavailable. "
+                "Maybe offline, FC/member-only without permission, or stale streamserver data."
+            )
+            return result
+    
+        result |= {
+            "title": live_title,
+            "is_live": True,
+            "play_url_list": valid_play_url_list,
+        }
+    
         return result
 
     async def fetch_stream_url(self, json_data: dict, video_quality: str | int | None = None) -> StreamData:
